@@ -304,6 +304,11 @@ pub(crate) fn map_buffer(
         }
     }
 
+    // the zeroing above may have gone to write combining memory, and the thread that eventually
+    // reads this mapping is usually not this one, so publish it here.
+    // see https://github.com/gfx-rs/wgpu/issues/8897
+    wgt::write_combining_fence();
+
     Ok(mapping)
 }
 

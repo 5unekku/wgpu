@@ -18,9 +18,36 @@ use core::{
     mem,
     ops::{Bound, RangeBounds},
     ptr::NonNull,
+    sync::atomic::{fence, Ordering},
 };
 
 use crate::link_to_wgpu_item;
+
+/// Orders accesses to [write combining] memory, such as the memory behind a [`WriteOnly`]
+/// obtained from a mapped GPU buffer.
+///
+/// Call this after finishing a batch of writes to write combining memory, and before reading
+/// memory which may have been written that way, so that the reads observe the writes.
+///
+/// `wgpu` already does this for you around the mapped ranges it hands out; it is exposed
+/// because it is also needed by anyone who moves a [`WriteOnly`] between threads and wants
+/// the writes to be visible on the other side.
+///
+/// # Why this is not an `Acquire`/`Release` fence
+///
+/// Write combining stores are held in dedicated hardware buffers which the usual
+/// acquire-release synchronization does not drain: on x86 a `Release` or `Acquire` fence
+/// compiles to nothing at all, so it constrains the compiler but leaves the stores sitting in
+/// the write combining buffers, where a later load cannot see them. [`Ordering::SeqCst`] is
+/// used instead because it is the only ordering that lowers to a real fence instruction
+/// (`mfence` on x86-64, `dmb ish` on AArch64) on every architecture, and such an instruction
+/// is what actually drains those buffers.
+///
+/// [write combining]: https://en.wikipedia.org/wiki/Write_combining
+#[inline]
+pub fn write_combining_fence() {
+    fence(Ordering::SeqCst);
+}
 
 /// Like `&'a mut T`, but allows only write operations.
 ///
@@ -38,6 +65,14 @@ use crate::link_to_wgpu_item;
 /// with some changes to ownership intended to minimize the pain of explicit reborrowing.
 ///
 // FIXME: Add an introduction to the necessity of explicit reborrowing.
+///
+/// # Writing from multiple threads
+///
+/// A `WriteOnly` may be [split][Self::split_at] and moved to other threads. If you do that,
+/// each of those threads must call [`write_combining_fence()`] once it is done writing;
+/// joining the threads, or any other ordinary synchronization, is **not** enough to make
+/// write combining stores visible. `wgpu` emits that fence for the thread which drops the
+/// [`BufferViewMut`] or [`QueueWriteBufferView`], but it cannot do so for any other thread.
 ///
 /// [write combining]: https://en.wikipedia.org/wiki/Write_combining
 #[doc = link_to_wgpu_item!(struct BufferViewMut)]

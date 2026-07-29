@@ -119,6 +119,37 @@ fn split_mut_binding() {
     buffer.unmap();
 }
 
+/// Ensure that reading an overlapping range, after dropping a write mapping, observes the
+/// bytes that were written through it.
+///
+/// Mapped memory may be write combining, in which case the writes are not published by the
+/// ordinary release/acquire synchronization the compiler emits; see
+/// <https://github.com/gfx-rs/wgpu/issues/8897>. This test cannot fail on the noop backend,
+/// whose memory is ordinary, but it pins the supported access pattern.
+#[test]
+fn read_after_write_mapping() {
+    let (device, _queue) = wgpu::Device::noop(&wgpu::DeviceDescriptor::default());
+
+    let buffer = device.create_buffer(&wgpu::BufferDescriptor {
+        label: None,
+        size: 1024,
+        usage: wgpu::BufferUsages::MAP_WRITE | wgpu::BufferUsages::COPY_SRC,
+        mapped_at_creation: true,
+    });
+
+    let expected: Vec<u8> = (0..1024u32).map(|i| i as u8).collect();
+
+    let mut write_mapping = buffer.slice(..).get_mapped_range_mut().unwrap();
+    write_mapping.copy_from_slice(&expected);
+    drop(write_mapping);
+
+    let read_mapping = buffer.slice(256..768).get_mapped_range().unwrap();
+    assert_eq!(&*read_mapping, &expected[256..768]);
+    drop(read_mapping);
+
+    buffer.unmap();
+}
+
 /// Ensure that you can make two overlapping immutablely mapped ranges.
 #[test]
 fn overlapping_ref_binding() {

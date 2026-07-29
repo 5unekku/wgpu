@@ -79,6 +79,7 @@ Bottom level categories:
 #### General
 
 - Zero-initialize padding (if any) at the end of a buffer allocation. This was application-visible in rare cases on Vulkan when a shader read beyond the valid range of a vertex buffer. By @andyleiserson in [#9791](https://github.com/gfx-rs/wgpu/pull/9791).
+- Publish writes made through `BufferViewMut` and `QueueWriteBufferView` with a memory fence, so that a subsequent `get_mapped_range()` — on this thread or another — observes them. Mapped memory may be write combining, whose stores are not drained by the release/acquire synchronization the compiler emits. The new `wgpu::write_combining_fence()` is exposed for applications which move a `WriteOnly` between threads themselves. By @5unekku in [#8897](https://github.com/gfx-rs/wgpu/issues/8897).
 - Fix required immediate slots calculation and remove `naga::valid::FunctionInfo::immediate_slots_used`. By @beicause in [#9725](https://github.com/gfx-rs/wgpu/pull/9725).
 
 #### naga

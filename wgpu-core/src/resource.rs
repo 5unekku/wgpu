@@ -881,6 +881,12 @@ impl Buffer {
         if !range_size.is_multiple_of(wgt::COPY_BUFFER_ALIGNMENT) {
             return Err(BufferAccessError::UnalignedRangeSize { range_size });
         }
+
+        // mapped memory may be write combining, so writes made through a previous mapped range
+        // are not necessarily visible to reads through the one we are about to hand out.
+        // see https://github.com/gfx-rs/wgpu/issues/8897
+        wgt::write_combining_fence();
+
         let map_state = &*self.map_state.lock();
         match *map_state {
             BufferMapState::Init { ref staging_buffer } => {
@@ -1014,6 +1020,12 @@ impl Buffer {
         self.check_destroyed(&snatch_guard)?;
         let raw_buf = self.try_raw(&snatch_guard)?;
         let map_state = mem::replace(&mut *self.map_state.lock(), BufferMapState::Idle);
+
+        // publish whatever the host wrote into this (possibly write combining) mapping before
+        // anything else looks at it: the tracing code below, the driver, or a later mapping.
+        // see https://github.com/gfx-rs/wgpu/issues/8897
+        wgt::write_combining_fence();
+
         match map_state {
             BufferMapState::Init { staging_buffer } => {
                 #[cfg(feature = "trace")]
@@ -1386,6 +1398,11 @@ impl StagingBuffer {
     }
 
     pub(crate) fn flush(self) -> FlushedStagingBuffer {
+        // staging buffers live in host visible memory, which may be write combining, so the
+        // writes above need publishing before anything reads them back.
+        // see https://github.com/gfx-rs/wgpu/issues/8897
+        wgt::write_combining_fence();
+
         let device = self.device.raw();
         if !self.is_coherent {
             #[allow(clippy::single_range_in_vec_init)]

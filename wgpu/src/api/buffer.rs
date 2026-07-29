@@ -997,6 +997,11 @@ impl Drop for BufferView {
 
 impl Drop for BufferViewMut {
     fn drop(&mut self) {
+        // dropping the view is the point at which this range becomes available to be viewed
+        // again, possibly for reading and possibly from another thread, so publish the writes
+        // before releasing it. see https://github.com/gfx-rs/wgpu/issues/8897
+        wgt::write_combining_fence();
+
         self.buffer
             .map_context
             .lock()
