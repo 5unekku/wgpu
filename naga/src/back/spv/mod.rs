@@ -301,6 +301,22 @@ struct Function {
     /// [`spilled_composites`]: Function::spilled_composites
     access_uses: crate::FastHashMap<Handle<crate::Expression>, usize>,
 
+    /// A map from an [`Access`] or [`AccessIndex`] expression that indexes a
+    /// handle [`BindingArray`] to the id of the `OpLoad` that fetched the
+    /// selected element.
+    ///
+    /// The cached value of such an expression is the *pointer* to the element,
+    /// because that is what SPIR-V wants when the handle is passed to a
+    /// function, exactly like [`GlobalVariable::access_id`]. Operations that
+    /// consume the handle itself, like `OpImageSample`, want the loaded value
+    /// instead, and find it here via [`BlockContext::get_handle_id`], mirroring
+    /// [`GlobalVariable::handle_id`].
+    ///
+    /// [`Access`]: crate::Expression::Access
+    /// [`AccessIndex`]: crate::Expression::AccessIndex
+    /// [`BindingArray`]: crate::TypeInner::BindingArray
+    binding_array_handle_ids: crate::FastHashMap<Handle<crate::Expression>, Word>,
+
     blocks: Vec<TerminatedBlock>,
     entry_point_context: Option<EntryPointContext>,
 }

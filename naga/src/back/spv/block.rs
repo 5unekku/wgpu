@@ -970,7 +970,14 @@ impl BlockContext<'_> {
                                 .decorate_non_uniform_binding_array_access(load_id)?;
                         }
 
-                        load_id
+                        self.function
+                            .binding_array_handle_ids
+                            .insert(expr_handle, load_id);
+
+                        // cache the pointer rather than the loaded handle: SPIR-V passes
+                        // opaque handles to functions by pointer, and image operations
+                        // reach the load through `get_handle_id`
+                        result_id
                     }
                     ref other => {
                         log::error!(
@@ -1053,7 +1060,13 @@ impl BlockContext<'_> {
                             None,
                         ));
 
-                        load_id
+                        self.function
+                            .binding_array_handle_ids
+                            .insert(expr_handle, load_id);
+
+                        // see the `Access` case above for why the pointer is cached
+                        // instead of the loaded handle
+                        result_id
                     }
                     ref other => {
                         log::error!("Unable to access index of {other:?}");

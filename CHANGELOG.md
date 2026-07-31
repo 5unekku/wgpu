@@ -93,6 +93,7 @@ Bottom level categories:
 #### Naga
 
 - Replace embedded NUL characters with `?` when writing debug strings to SPIR-V. By @andyleiserson in [#9904](https://github.com/gfx-rs/wgpu/pull/9904).
+- Fix invalid SPIR-V being generated when a texture or sampler taken from a `binding_array` is passed to a user-defined function. By @5unekku in [#8520](https://github.com/gfx-rs/wgpu/issues/8520).
 
 #### Vulkan
 
