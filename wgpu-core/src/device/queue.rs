@@ -360,6 +360,23 @@ pub(crate) struct EncoderInFlight {
     pub(crate) pending_blas_s: FastHashMap<TrackerIndex, Arc<Blas>>,
 }
 
+/// Amount of [`StagingBuffer`] memory that may pile up in a [`PendingWrites`]
+/// before it is submitted on the user's behalf.
+///
+/// This matches the largest staging allocation `wgpu-core` makes on its own, in
+/// [`crate::indirect_validation`].
+const MAX_PENDING_STAGING_BUFFER_BYTES: u64 = 1 << 26;
+
+/// Number of [`StagingBuffer`]s that may pile up in a [`PendingWrites`] before it is
+/// submitted on the user's behalf.
+///
+/// Every write gets its own GPU allocation, rounded up to whatever granularity the
+/// driver uses, so a byte budget alone doesn't bound a stream of tiny writes: the
+/// original report for this had a 64 byte per-frame uniform update grow to gigabytes of
+/// resident memory. At a typical 64KiB allocation granularity this budget works out to
+/// roughly the same real memory as [`MAX_PENDING_STAGING_BUFFER_BYTES`].
+const MAX_PENDING_STAGING_BUFFER_COUNT: usize = 1024;
+
 /// A private command encoder for writes made directly on the device
 /// or queue.
 ///
@@ -378,6 +395,9 @@ pub(crate) struct EncoderInFlight {
 ///    are inserted ahead of the user's commands.)
 /// 2. The next `mapAsync` request for a buffer that has pending
 ///    writes.
+/// 3. The next queue write, once the staging buffers accumulated here
+///    exceed [`MAX_PENDING_STAGING_BUFFER_BYTES`] or
+///    [`MAX_PENDING_STAGING_BUFFER_COUNT`].
 ///
 /// Important:
 /// When locking pending_writes be sure that tracker is not locked
@@ -397,6 +417,15 @@ pub(crate) struct PendingWrites {
     pub is_recording: bool,
 
     temp_resources: Vec<TempResource>,
+
+    /// Number of [`StagingBuffer`]s in `temp_resources`, and the total number of bytes
+    /// they hold.
+    ///
+    /// Used to decide when the pending writes have grown large enough that they should
+    /// be submitted without waiting for the user to call [`Queue::submit`].
+    staging_buffer_count: usize,
+    staging_buffer_bytes: u64,
+
     dst_buffers: FastHashMap<TrackerIndex, Arc<Buffer>>,
     dst_textures: FastHashMap<TrackerIndex, Arc<Texture>>,
     copied_blas_s: FastHashMap<TrackerIndex, Arc<Blas>>,
@@ -412,6 +441,8 @@ impl PendingWrites {
             command_encoder,
             is_recording: false,
             temp_resources: Vec::new(),
+            staging_buffer_count: 0,
+            staging_buffer_bytes: 0,
             dst_buffers: FastHashMap::default(),
             dst_textures: FastHashMap::default(),
             copied_blas_s: FastHashMap::default(),
@@ -443,12 +474,32 @@ impl PendingWrites {
     }
 
     pub fn consume_temp(&mut self, resource: TempResource) {
+        if let TempResource::StagingBuffer(ref staging_buffer) = resource {
+            self.track_staging_buffer(staging_buffer);
+        }
         self.temp_resources.push(resource);
     }
 
     pub fn consume(&mut self, buffer: FlushedStagingBuffer) {
+        self.track_staging_buffer(&buffer);
         self.temp_resources
             .push(TempResource::StagingBuffer(buffer));
+    }
+
+    fn track_staging_buffer(&mut self, staging_buffer: &FlushedStagingBuffer) {
+        self.staging_buffer_count += 1;
+        self.staging_buffer_bytes = self
+            .staging_buffer_bytes
+            .saturating_add(staging_buffer.size.get());
+    }
+
+    /// Whether enough [`StagingBuffer`] memory has piled up since the last submission
+    /// that these pending writes should be submitted right away.
+    ///
+    /// See [`Queue::flush_pending_writes_if_over_budget`].
+    pub fn is_over_staging_buffer_budget(&self) -> bool {
+        self.staging_buffer_count >= MAX_PENDING_STAGING_BUFFER_COUNT
+            || self.staging_buffer_bytes >= MAX_PENDING_STAGING_BUFFER_BYTES
     }
 
     pub fn clear_buffer(
@@ -483,6 +534,12 @@ impl PendingWrites {
         Ok(())
     }
 
+    fn take_temp_resources(&mut self) -> Vec<TempResource> {
+        self.staging_buffer_count = 0;
+        self.staging_buffer_bytes = 0;
+        mem::take(&mut self.temp_resources)
+    }
+
     fn pre_submit(
         &mut self,
         command_allocator: &CommandAllocator,
@@ -512,7 +569,7 @@ impl PendingWrites {
                     label: "(wgpu internal) PendingWrites command encoder".into(),
                 },
                 trackers: Tracker::new(device.ordered_buffer_usages, device.ordered_texture_usages),
-                temp_resources: mem::take(&mut self.temp_resources),
+                temp_resources: self.take_temp_resources(),
                 _indirect_draw_validation_resources: crate::indirect_validation::DrawResources::new(
                     device.clone(),
                 ),
@@ -665,6 +722,13 @@ impl<'a> PendingSubmission<'a> {
 //TODO: move out common parts of write_xxx.
 
 impl Queue {
+    /// Copy `data` into `buffer` at `buffer_offset`.
+    ///
+    /// The copy is staged in a [`StagingBuffer`] held by [`PendingWrites`] rather than
+    /// performed right away: it is handed to the GPU by the next [`Queue::submit`], by
+    /// the next map of a buffer with pending writes, or by the auto-flush in
+    /// [`Queue::flush_pending_writes_if_over_budget`], whichever comes first. The staging
+    /// buffer lives until that submission has completed.
     pub fn write_buffer(
         &self,
         buffer: Arc<Buffer>,
@@ -736,6 +800,10 @@ impl Queue {
 
         drop(pending_writes);
 
+        // A `DeviceError` means we're losing the device anyways, and reporting it here
+        // would hide the result of the write the caller actually asked for.
+        let _: Result<_, DeviceError> = self.flush_pending_writes_if_over_budget();
+
         result
     }
 
@@ -787,6 +855,10 @@ impl Queue {
         pending_writes.consume(staging_buffer);
 
         drop(pending_writes);
+
+        // A `DeviceError` means we're losing the device anyways, and reporting it here
+        // would hide the result of the write the caller actually asked for.
+        let _: Result<_, DeviceError> = self.flush_pending_writes_if_over_budget();
 
         result
     }
@@ -900,6 +972,10 @@ impl Queue {
         Ok(())
     }
 
+    /// Copy `data` into the `destination` texture.
+    ///
+    /// Like [`Queue::write_buffer`], the texels are staged in a [`StagingBuffer`] held by
+    /// [`PendingWrites`] until the writes are submitted.
     pub fn write_texture(
         &self,
         destination: wgt::TexelCopyTextureInfo<Arc<Texture>>,
@@ -1129,6 +1205,16 @@ impl Queue {
         pending_writes.consume(staging_buffer);
         pending_writes.insert_texture(&dst);
 
+        // every lock has to be released before flushing, since the submission locks come
+        // first in the lock ordering
+        drop(dst_initialization_status);
+        drop(pending_writes);
+        drop(snatch_guard);
+
+        // A `DeviceError` means we're losing the device anyways, and reporting it here
+        // would hide the result of the write the caller actually asked for.
+        let _: Result<_, DeviceError> = self.flush_pending_writes_if_over_budget();
+
         Ok(())
     }
 
@@ -1351,6 +1437,45 @@ impl Queue {
         if !pending_writes.contains_buffer(buffer) {
             return Ok(());
         }
+
+        submission.submit(pending_writes)?;
+
+        Ok(())
+    }
+
+    /// Flush `PendingWrites` if the [`StagingBuffer`]s it holds have grown past
+    /// [`PendingWrites::is_over_staging_buffer_budget`].
+    ///
+    /// Staging buffers are only freed once the submission that consumes them has
+    /// completed, so an application that writes every frame but only submits on some of
+    /// them would otherwise hold on to every skipped frame's staging buffer forever. See
+    /// <https://github.com/gfx-rs/wgpu/issues/9354>.
+    ///
+    /// The caller must not hold the `pending_writes` lock, nor any lock ranked after
+    /// `DEVICE_COMMAND_INDICES`, since this acquires the submission locks first.
+    fn flush_pending_writes_if_over_budget(&self) -> Result<(), DeviceError> {
+        // checked without the submission locks first, so that the common case doesn't
+        // contend on the device-wide command index lock
+        let over_budget = self.pending_writes.lock().is_over_staging_buffer_budget();
+        if !over_budget {
+            return Ok(());
+        }
+
+        let snatch_guard = self.device.snatchable_lock.read();
+        let submission = self
+            .allocate_submission(snatch_guard)
+            .map_err(|(_index, e)| e)?;
+
+        let mut pending_writes = self.pending_writes.lock();
+        if !pending_writes.is_over_staging_buffer_budget() {
+            // someone else submitted while we were taking the locks
+            return Ok(());
+        }
+
+        // a write that fails validation still consumes its staging buffer without
+        // recording anything, so make sure there is an encoder for `pre_submit` to take
+        // the temp resources along with
+        pending_writes.activate();
 
         submission.submit(pending_writes)?;
 

@@ -141,8 +141,8 @@ impl Queue {
     /// # Performance considerations
     ///
     /// * Calls to `write_buffer()` do *not* submit the transfer to the GPU
-    ///   immediately. They begin GPU execution only on the next call to
-    ///   [`Queue::submit()`], just before the explicitly submitted commands.
+    ///   immediately. They are staged, and begin GPU execution only on the next
+    ///   call to [`Queue::submit()`], just before the explicitly submitted commands.
     ///   To get a set of scheduled transfers started immediately,
     ///   it's fine to call `submit` with no command buffers at all:
     ///
@@ -173,6 +173,13 @@ impl Queue {
     ///   next submission finishes. To entirely avoid short-lived allocations, you might
     ///   be able to use [`StagingBelt`](crate::util::StagingBelt),
     ///   or buffers you explicitly create, map, and unmap yourself.
+    ///
+    /// * Since that staging memory lives until a submission that consumes it has
+    ///   finished, writes made on frames that end up skipping [`Queue::submit()`]
+    ///   keep their staging memory around in the meantime. wgpu bounds this by
+    ///   submitting the accumulated writes on your behalf once they grow past an
+    ///   internal budget, but it is still cheaper to only write what you are about
+    ///   to submit.
     pub fn write_buffer(&self, buffer: &Buffer, offset: BufferAddress, data: &[u8]) {
         self.inner.write_buffer(&buffer.inner, offset, data);
     }
@@ -201,8 +208,8 @@ impl Queue {
     ///   contents of `buffer`. You should treat it as “write-only”.
     ///
     /// * Dropping the [`QueueWriteBufferView`] does *not* submit the
-    ///   transfer to the GPU immediately. The transfer begins only on the next
-    ///   call to [`Queue::submit()`] after the view is dropped, just before the
+    ///   transfer to the GPU immediately. The transfer is staged, and begins only on
+    ///   the next call to [`Queue::submit()`] after the view is dropped, just before the
     ///   explicitly submitted commands. To get a set of scheduled transfers started
     ///   immediately, it's fine to call `queue.submit([])` with no command buffers at all.
     ///
@@ -244,7 +251,9 @@ impl Queue {
     /// # Performance considerations
     ///
     /// This operation has the same performance considerations as [`Queue::write_buffer()`];
-    /// see its documentation for details.
+    /// see its documentation for details. In particular, the texels are staged in a
+    /// temporary allocation that is only handed to the GPU, and released, once the
+    /// writes are submitted.
     ///
     /// However, since there is no “mapped texture” like a mapped buffer,
     /// alternate techniques for writing to textures will generally consist of first copying
