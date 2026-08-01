@@ -427,6 +427,46 @@ fn stack_like() {
     drop(guard1);
 }
 
+/// `Queue::submit`'s order for the trackers and a resource's init status.
+///
+/// Regression test for <https://github.com/gfx-rs/wgpu/issues/9460>: `submit`
+/// holds `Device::trackers` across `BakedCommands::initialize_buffer_memory`
+/// and `initialize_texture_memory`, both of which take the init status of the
+/// resources they have to clear.
+#[test]
+fn trackers_before_initialization_status() {
+    use super::rank;
+
+    let trackers = Mutex::new(rank::DEVICE_TRACKERS, ());
+    let texture_initialization_status = RwLock::new(rank::TEXTURE_INITIALIZATION_STATUS, ());
+    let buffer_initialization_status = RwLock::new(rank::BUFFER_INITIALIZATION_STATUS, ());
+
+    let _trackers_guard = trackers.lock();
+
+    let buffer_guard = buffer_initialization_status.write();
+    drop(buffer_guard);
+
+    let texture_guard = texture_initialization_status.write();
+    drop(texture_guard);
+}
+
+/// The reverse of [`trackers_before_initialization_status`] is a deadlock.
+///
+/// `Queue::write_texture` used to hold `Texture::initialization_status` across
+/// its `Device::trackers` acquisition, which deadlocks against a concurrent
+/// `Queue::submit`. See <https://github.com/gfx-rs/wgpu/issues/9460>.
+#[test]
+#[should_panic(expected = "Locking Device::trackers after locking Texture::initialization_status")]
+fn initialization_status_before_trackers() {
+    use super::rank;
+
+    let texture_initialization_status = RwLock::new(rank::TEXTURE_INITIALIZATION_STATUS, ());
+    let trackers = Mutex::new(rank::DEVICE_TRACKERS, ());
+
+    let _texture_guard = texture_initialization_status.write();
+    let _trackers_guard = trackers.lock();
+}
+
 /// Locks can only be acquired and released in a stack-like order.
 #[test]
 #[should_panic(expected = "Lock not released in stacking order")]
