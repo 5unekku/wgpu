@@ -47,6 +47,7 @@ Bottom level categories:
 #### General
 
 - Support the `wasm64-unknown-unknown` target for the web backend. Building for wasm64 requires a nightly toolchain with `-Z build-std=std,panic_abort`. By @nickbabcock in [#9836](https://github.com/gfx-rs/wgpu/pull/9836).
+- `wgpu-core` now exposes a `validate_device_descriptor` function that validates a device descriptor as `request_device` would. This may be useful in conjunction with `create_device_from_hal`. By @andyleiserson in [#9967](https://github.com/gfx-rs/wgpu/pull/9967).
 
 #### Hal
 
@@ -81,10 +82,12 @@ Bottom level categories:
 - Zero-initialize padding (if any) at the end of a buffer allocation. This was application-visible in rare cases on Vulkan when a shader read beyond the valid range of a vertex buffer. By @andyleiserson in [#9791](https://github.com/gfx-rs/wgpu/pull/9791).
 - Publish writes made through `BufferViewMut` and `QueueWriteBufferView` with a memory fence, so that a subsequent `get_mapped_range()` — on this thread or another — observes them. Mapped memory may be write combining, whose stores are not drained by the release/acquire synchronization the compiler emits. The new `wgpu::write_combining_fence()` is exposed for applications which move a `WriteOnly` between threads themselves. By @5unekku in [#8897](https://github.com/gfx-rs/wgpu/issues/8897).
 - Fix required immediate slots calculation and remove `naga::valid::FunctionInfo::immediate_slots_used`. By @beicause in [#9725](https://github.com/gfx-rs/wgpu/pull/9725).
+- Fix `PendingSubmission` releasing its lock guards out of stacking order, which tripped `--cfg wgpu_validate_locks` on any submission. By @AdrianEddy in [#9960](https://github.com/gfx-rs/wgpu/pull/9960).
 
 #### naga
 
 - Fix panics when shader `var<immediate>` size is larger than 256 bytes. By @beicause in [#9725](https://github.com/gfx-rs/wgpu/pull/9725).
+- Fix a panic in the SPIR-V frontend when a subgroup collective operation (e.g. `OpGroupNonUniformUMin`) or `OpGroupNonUniformBallot` used an argument whose value needed to be spilled to a temporary variable, such as when the argument was computed inside a loop. By @nazar-pc in [#9957](https://github.com/gfx-rs/wgpu/issues/9957).
 
 #### Validation
 
@@ -94,6 +97,7 @@ Bottom level categories:
 #### Naga
 
 - Replace embedded NUL characters with `?` when writing debug strings to SPIR-V. By @andyleiserson in [#9904](https://github.com/gfx-rs/wgpu/pull/9904).
+- Fix invalid HLSL generated for `textureSampleLevel` with non-2D textures. By @mvanhorn in [#9717](https://github.com/gfx-rs/wgpu/issues/9717).
 
 #### Vulkan
 
