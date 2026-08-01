@@ -153,10 +153,14 @@ define_lock_ranks! {
         TEXTURE_INITIALIZATION_STATUS,
         SHARED_TRACKER_INDEX_ALLOCATOR_INNER,
     }
-    rank TEXTURE_INITIALIZATION_STATUS "Texture::initialization_status" followed by {
-        DEVICE_TRACKERS,
-    }
+    // `Queue::submit` holds the device trackers across
+    // `BakedCommands::initialize_{buffer,texture}_memory`, which take the init
+    // status of each resource they have to clear. That fixes the order for
+    // everyone else: `Queue::write_texture` and friends must release a resource's
+    // init status before they lock the trackers, never the other way around.
     rank DEVICE_TRACKERS "Device::trackers" followed by {
+        BUFFER_INITIALIZATION_STATUS,
+        TEXTURE_INITIALIZATION_STATUS,
         TEXTURE_CLEAR_MODE,
     }
     rank QUEUE_LIFE_TRACKER "Queue::life_tracker" followed by {
@@ -208,6 +212,7 @@ define_lock_ranks! {
     rank QUERY_SET_INITIALIZED_SLOTS "QuerySet::initialized_slots" followed by { }
     rank TEXTURE_BIND_GROUPS "Texture::bind_groups" followed by { }
     rank TEXTURE_CLEAR_MODE "Texture::clear_mode" followed by { }
+    rank TEXTURE_INITIALIZATION_STATUS "Texture::initialization_status" followed by { }
     rank TEXTURE_VIEWS "Texture::views" followed by { }
 
     // Ranks not connected to the graph, alphabetical.
